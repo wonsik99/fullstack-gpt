@@ -1,28 +1,35 @@
-from langchain.prompts import ChatPromptTemplate
-from langchain.document_loaders import UnstructuredFileLoader
-from langchain.embeddings import CacheBackedEmbeddings, OpenAIEmbeddings
-from langchain.schema.runnable import RunnableLambda, RunnablePassthrough
-from langchain.storage import LocalFileStore
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores.faiss import FAISS
-from langchain.chat_models import ChatOpenAI
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_community.document_loaders import UnstructuredFileLoader
+from langchain_classic.embeddings import CacheBackedEmbeddings
+from langchain_classic.storage import LocalFileStore
+from langchain_community.vectorstores import FAISS
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_text_splitters import CharacterTextSplitter
 import streamlit as st
 
 st.set_page_config(page_title="DocumentGPT", page_icon="📄")
 
+# 1. Callback Handler
+# Callback handler for displaying the LLM's streaming response on the screen in real-time
+# Inherits from BaseCallbackHandler to detect LLM events (start, token generation, end)
 class ChatCallbackHandler(BaseCallbackHandler):
+    # Called when the LLM starts generating a response
     def on_llm_start(self, *args, **kwargs):
-        self.message=""
-        self.message_box = st.empty()
+        self.message="" # Initialize an empty string to hold the new message
+        self.message_box = st.empty() # Create an empty UI box in Streamlit (will be filled with tokens later)
 
+    # Called when the LLM finishes generating a response
     def on_llm_end(self, *args, **kwargs):
-        save_message(self.message, "ai")
+        save_message(self.message, "ai") # Save the completed message to the session history
 
+    # Called every time the LLM generates a token (character) (only works when streaming=True)
     def on_llm_new_token(self, token, *args, **kwargs):
-        self.message += token
-        self.message_box.markdown(self.message)
+        self.message += token # Append the new token to the existing message
+        self.message_box.markdown(self.message) # Update the same UI box to create a typing effect
 
+# 2. LLM
 llm = ChatOpenAI(
     model_name="gpt-5-nano",
     tiktoken_model_name="gpt-3.5-turbo",
@@ -33,13 +40,15 @@ llm = ChatOpenAI(
     ]
 )
 
-@st.cache_data(show_spinner="Embedding file...")
+# 3. Embed File
+@st.cache_resource(show_spinner="Embedding file...")
 def embed_file(file):
     file_content = file.read()
     file_path = f"./.cache/files/{file.name}"
     
     with open(file_path, "wb") as f:
         f.write(file_content)
+
     cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
     splitter = CharacterTextSplitter.from_tiktoken_encoder(
         separator="\n",
@@ -51,25 +60,30 @@ def embed_file(file):
     embeddings = OpenAIEmbeddings()
     cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
     vectorstore = FAISS.from_documents(docs, cached_embeddings)
-    retriever = vectorstore.as_retriever()
+    retriever = vectorstore.as_retriever() #k=4 is default
     return retriever
 
+# 4. Save Message
 def save_message(message, role):
     st.session_state["messages"].append({"message":message, "role":role})
 
+# 5. Send Message
 def send_message(message, role, save=True):
     with st.chat_message(role):
         st.markdown(message)
     if save:
         save_message(message, role)
 
+# 6. Paint History
 def paint_history():
     for message in st.session_state["messages"]:
         send_message(message["message"], message["role"], save=False)
 
+# 7. Format Docs
 def format_docs(docs):
     return "\n\n".join(document.page_content for document in docs)
 
+# 8. Prompt
 prompt = ChatPromptTemplate.from_messages([
     (
         "system",
@@ -82,6 +96,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{question}")
 ])
 
+# 9. UI
 st.title("DocumentGPT")
 
 st.markdown(
@@ -100,6 +115,7 @@ with st.sidebar:
     type=["pdf", "txt", "docx"]
     )
 
+# 10. Chat Logic
 if file:
     retriever = embed_file(file)
     send_message("I'm ready! Ask away!","ai",save=False)
