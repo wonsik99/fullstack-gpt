@@ -172,6 +172,8 @@ def wiki_serach(term):
 
 with st.sidebar:
     docs = None
+    topic = None
+    file = None
     choice = st.selectbox(
         "Choose a quiz type",
         ("File", "Wikipedia Article")
@@ -199,6 +201,7 @@ if not docs:
         """
     )
 
+else:
     response = run_quiz_chain(docs, topic if topic else file.name)
     with st.form("questions_form"):
         for question in response["questions"]:
