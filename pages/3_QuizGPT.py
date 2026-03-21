@@ -1,145 +1,62 @@
 import streamlit as st
-import json
+from pydantic import BaseModel, Field
+from typing import List
 from langchain_community.retrievers import WikipediaRetriever
 from langchain_community.document_loaders import UnstructuredFileLoader
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_openai import ChatOpenAI
-from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import BaseOutputParser
 
-class JsonOutputParser(BaseOutputParser):
-    def parse(self, text):
-        text = text.replace("```", "").replace("json", "")
-        return json.loads(text)
+# Pydantic models for Function Calling (Structured Output)
+# These define the exact JSON schema that the LLM must follow when generating quiz data.
+class Answer(BaseModel):
+    answer: str = Field(description="The answer text")
+    correct: bool = Field(description="Whether this answer is correct")
 
-output_parser = JsonOutputParser()
+class Question(BaseModel):
+    question: str = Field(description="The question text")
+    answers: List[Answer] = Field(description="A list of 4 possible answers")
+
+class Quiz(BaseModel):
+    questions: List[Question] = Field(description="A list of 10 quiz questions")
 
 st.set_page_config(page_title="QuizGPT", page_icon="❓")
 
 st.title("QuizGPT")
 
+# Initialize the LLM with low temperature for accurate quiz generation
 llm = ChatOpenAI(
     model_name="gpt-5.4-nano",
-    tiktoken_model_name="gpt-3.5-turbo",
-    temperature=1,
-    streaming=True,
-    callbacks=[
-        StreamingStdOutCallbackHandler()
-    ]
+    temperature=0.1
 )
 
+# Combines page_content from all documents into a single string
 def format_docs(docs):
     return "\n\n".join(document.page_content for document in docs)
 
+# Prompt that instructs the LLM to generate quiz questions from the given context
 questions_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-        """
-        You are a helpful assistant that is role playing as a teacher.
-
-        Based ONLY on the following context make 10 questions to test the user's knowledge about the text.
-
-        Each question should have 4 answers, three of them must be incorrect and one should be correct.
-
-        Use (o) to signal the correct answer.
-
-        Question examples:
-
-        Question: What is the color of the ocean?
-        Answers: Red|Yellow|Green|Blue(o)
-
-        Question: What is the capital or Georgia?
-        Answers: Baku|Tbilisi(o)|Manila|Beirut
-
-        Question: When was Avatar released?
-        Answers: 2007|2001|2009(o)|1998
-
-        Question: Who was Julius Caesar?
-        Answers: A Roman Emperor(o)|Painter|Actor|Model
-
-        Your turn!
-
-        Context: {context}
-        """)
-    ])
-
-questions_chain = {"context": format_docs} | questions_prompt | llm
-
-formatting_prompt = ChatPromptTemplate.from_messages([
-    ("system", 
+    ("system",
     """
-    You are a powerful formatting algorithm.
+    You are a helpful assistant that is role playing as a teacher.
 
-    You format exam questions into JSON format.
-    Answers with (o) are the correct ones.
+    Based ONLY on the following context make 10 questions to test the user's knowledge about the text.
 
-    Example Input:
-    Question: What is the color of the ocean?
-    Answers: Red|Yellow|Green|Blue(o)
+    Each question should have 4 answers, three of them must be incorrect and one should be correct.
 
-    Question: What is the capital or Georgia?
-    Answers: Baku|Tbilisi(o)|Manila|Beirut
-
-    Question: When was Avatar released?
-    Answers: 2007|2001|2009(o)|1998
-
-    Question: Who was Julius Caesar?
-    Answers: A Roman Emperor(o)|Painter|Actor|Model
-
-
-    Example Output:
-
-    ```json
-    {{
-      "questions": [
-        {{
-          "question": "What is the color of the ocean?",
-          "answers": [
-            {{ "answer": "Red", "correct": false }},
-            {{ "answer": "Yellow", "correct": false }},
-            {{ "answer": "Green", "correct": false }},
-            {{ "answer": "Blue", "correct": true }}
-          ]
-        }},
-        {{
-          "question": "What is the capital or Georgia?",
-          "answers": [
-            {{ "answer": "Baku", "correct": false }},
-            {{ "answer": "Tbilisi", "correct": true }},
-            {{ "answer": "Manila", "correct": false }},
-            {{ "answer": "Beirut", "correct": false }}
-          ]
-        }},
-        {{
-          "question": "When was Avatar released?",
-          "answers": [
-            {{ "answer": "2007", "correct": false }},
-            {{ "answer": "2001", "correct": false }},
-            {{ "answer": "2009", "correct": true }},
-            {{ "answer": "1998", "correct": false }}
-          ]
-        }},
-        {{
-          "question": "Who was Julius Caesar?",
-          "answers": [
-            {{ "answer": "A Roman Emperor", "correct": true }},
-            {{ "answer": "Painter", "correct": false }},
-            {{ "answer": "Actor", "correct": false }},
-            {{ "answer": "Model", "correct": false }}
-          ]
-        }}
-      ]
-    }}
-    ```
-    Your turn!
-    Questions: {context}
-    """,
-    )
+    Context: {context}
+    """)
 ])
 
-formatting_chain = formatting_prompt | llm
+# Create a structured LLM that enforces the Quiz schema via OpenAI Function Calling
+# This replaces the need for a separate formatting chain and JSON output parser
+structured_llm = llm.with_structured_output(Quiz)
+
+# Single chain: format docs → prompt → structured LLM → Quiz object
+quiz_chain = {"context": format_docs} | questions_prompt | structured_llm
 
 
+# Loads and splits an uploaded file into smaller document chunks for processing
 @st.cache_resource(show_spinner="Splitting file...")
 def split_file(file):
     file_content = file.read()
@@ -157,17 +74,20 @@ def split_file(file):
     docs = loader.load_and_split(text_splitter=splitter)
     return docs
 
+# Runs the quiz chain and caches the result to avoid redundant LLM calls
+# _docs is prefixed with underscore to tell Streamlit not to hash it
 @st.cache_resource(show_spinner="Generating quiz...")
 def run_quiz_chain(_docs, topic):
-    chain = {"context": questions_chain} | formatting_chain | output_parser
-    return chain.invoke(docs)
+    return quiz_chain.invoke(_docs)
 
+# Fetches relevant Wikipedia articles for a given search term
 @st.cache_resource(show_spinner="Searching Wikipedia...")
 def wiki_search(term):
     retriever = WikipediaRetriever(top_k_results=5)
     return retriever.invoke(term)
 
 
+# Sidebar: lets the user choose between file upload or Wikipedia search
 with st.sidebar:
     docs = None
     choice = st.selectbox(
@@ -187,31 +107,41 @@ with st.sidebar:
         if topic:
             docs = wiki_search(topic)
 
+# Main content area
 if not docs:
     st.markdown(
         """
         Welcome to QuizGPT!
 
-        I will make a quiz form Wikipedia articles or files you upload to test your knowledge and help you study.
+        I will make a quiz from Wikipedia articles or files you upload to test your knowledge and help you study.
 
-        Get started by uploaidng a file or searching on Wikipedia in the sidebar
+        Get started by uploading a file or searching on Wikipedia in the sidebar
         """
     )
 else:
+    # Generate quiz from the loaded documents
     response = run_quiz_chain(docs, topic if topic else file.name)
+    # Display quiz questions inside a form so all answers are submitted together
     with st.form("questions_form"):
-        for question in response["questions"]:
-            st.write(question["question"])
+        correct_count = 0
+        for question in response.questions:
+            st.write(question.question)
             value = st.radio(
                 "Select an option",
-                [answer["answer"] for answer in question["answers"]],
+                [answer.answer for answer in question.answers],
                 index=None
             )
-            if {"answer": value, "correct": True} in question["answers"]:
-                st.success("Correct!")
-            elif value is not None:
-                st.error("Wrong!")
+            # Check the selected answer against the correct one
+            if value:
+                correct_answer = next(a for a in question.answers if a.correct)
+                if value == correct_answer.answer:
+                    st.success("Correct!")
+                    correct_count += 1
+                else:
+                    st.error("Wrong!")
         button = st.form_submit_button()
-    
-        
-            
+    # Display total score after submitting
+    if button:
+        total = len(response.questions)
+        st.balloons() if correct_count == total else None
+        st.info(f"🎯 Your score: **{correct_count} / {total}**")
