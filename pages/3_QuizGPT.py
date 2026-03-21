@@ -1,11 +1,11 @@
 import streamlit as st
 import json
 from langchain_community.retrievers import WikipediaRetriever
-from langchain_text_splitters import CharacterTextSplitter
 from langchain_community.document_loaders import UnstructuredFileLoader
+from langchain_text_splitters import CharacterTextSplitter
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import BaseOutputParser
 
 class JsonOutputParser(BaseOutputParser):
@@ -13,56 +13,57 @@ class JsonOutputParser(BaseOutputParser):
         text = text.replace("```", "").replace("json", "")
         return json.loads(text)
 
-output_parsers = JsonOutputParser()
-    
+output_parser = JsonOutputParser()
 
 st.set_page_config(page_title="QuizGPT", page_icon="❓")
 
 st.title("QuizGPT")
 
 llm = ChatOpenAI(
-    model_name="gpt-5-mini",
+    model_name="gpt-5.4-nano",
+    tiktoken_model_name="gpt-3.5-turbo",
     temperature=1,
     streaming=True,
-    callbacks=[StreamingStdOutCallbackHandler()]
+    callbacks=[
+        StreamingStdOutCallbackHandler()
+    ]
 )
-
-question_prompt = ChatPromptTemplate.from_messages([
-    ("system",
-    """
-    You are a helpful assistant that is role playing as a teacher.
-
-    Based ONLY on the following context make 10 questions to test the user's knowledge about the text.
-
-    Each question should have 4 answers, three of them must be incorrect and one should be correct.
-
-    Use (o) to signal the correct answer.
-
-    Question examples:
-
-    Question: What is the color of the ocean?
-    Answers: Red|Yellow|Green|Blue(o)
-
-    Question: What is the capital or Georgia?
-    Answers: Baku|Tbilisi(o)|Manila|Beirut
-
-    Question: When was Avatar released?
-    Answers: 2007|2001|2009(o)|1998
-
-    Question: Who was Julius Caesar?
-    Answers: A Roman Emperor(o)|Painter|Actor|Model
-
-    Your turn!
-
-    Context: {context}
-    """
-    )
-])
 
 def format_docs(docs):
     return "\n\n".join(document.page_content for document in docs)
 
-question_chain = {"context": format_docs} | question_prompt | llm
+questions_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+        """
+        You are a helpful assistant that is role playing as a teacher.
+
+        Based ONLY on the following context make 10 questions to test the user's knowledge about the text.
+
+        Each question should have 4 answers, three of them must be incorrect and one should be correct.
+
+        Use (o) to signal the correct answer.
+
+        Question examples:
+
+        Question: What is the color of the ocean?
+        Answers: Red|Yellow|Green|Blue(o)
+
+        Question: What is the capital or Georgia?
+        Answers: Baku|Tbilisi(o)|Manila|Beirut
+
+        Question: When was Avatar released?
+        Answers: 2007|2001|2009(o)|1998
+
+        Question: Who was Julius Caesar?
+        Answers: A Roman Emperor(o)|Painter|Actor|Model
+
+        Your turn!
+
+        Context: {context}
+        """)
+    ])
+
+questions_chain = {"context": format_docs} | questions_prompt | llm
 
 formatting_prompt = ChatPromptTemplate.from_messages([
     ("system", 
@@ -132,13 +133,14 @@ formatting_prompt = ChatPromptTemplate.from_messages([
     ```
     Your turn!
     Questions: {context}
-    """
+    """,
     )
 ])
 
 formatting_chain = formatting_prompt | llm
 
-@st.cache_resource(show_spinner="Loading file...")
+
+@st.cache_resource(show_spinner="Splitting file...")
 def split_file(file):
     file_content = file.read()
     file_path = f"./.cache/quiz_files/{file.name}"
@@ -155,66 +157,61 @@ def split_file(file):
     docs = loader.load_and_split(text_splitter=splitter)
     return docs
 
-@st.cache_resource(show_spinner="Loading Wikipedia...")
+@st.cache_resource(show_spinner="Generating quiz...")
 def run_quiz_chain(_docs, topic):
-    chain = {"context": question_chain} | formatting_chain | output_parsers
-    response = chain.invoke(docs)
-    return response
+    chain = {"context": questions_chain} | formatting_chain | output_parser
+    return chain.invoke(docs)
 
 @st.cache_resource(show_spinner="Searching Wikipedia...")
-def wiki_serach(term):
+def wiki_search(term):
     retriever = WikipediaRetriever(top_k_results=5)
-    docs = retriever.invoke(term)
-    return docs
-    
-
+    return retriever.invoke(term)
 
 
 with st.sidebar:
     docs = None
-    topic = None
-    file = None
     choice = st.selectbox(
-        "Choose a quiz type",
+        "Choose what you want to use",
         ("File", "Wikipedia Article")
     )
 
     if choice == "File":
         file = st.file_uploader(
-            "Upload a .txt .pdf of .docx file",
+            "Upload a .txt .pdf or .docx file",
             type=["pdf", "txt", "docx"]
         )
         if file:
             docs = split_file(file)
-
-    elif choice == "Wikipedia Article":
+    else:
         topic = st.text_input("Search Wikipedia...")
         if topic:
-            docs = wiki_serach(topic)
-        
+            docs = wiki_search(topic)
+
 if not docs:
     st.markdown(
         """
         Welcome to QuizGPT!
-        
-        Upload a document or enter a Wikipedia topic to get started.
+
+        I will make a quiz form Wikipedia articles or files you upload to test your knowledge and help you study.
+
+        Get started by uploaidng a file or searching on Wikipedia in the sidebar
         """
     )
-
 else:
     response = run_quiz_chain(docs, topic if topic else file.name)
     with st.form("questions_form"):
         for question in response["questions"]:
             st.write(question["question"])
             value = st.radio(
-                "Select an option.",
+                "Select an option",
                 [answer["answer"] for answer in question["answers"]],
-                index=None,
+                index=None
             )
             if {"answer": value, "correct": True} in question["answers"]:
                 st.success("Correct!")
             elif value is not None:
                 st.error("Wrong!")
         button = st.form_submit_button()
+    
         
-        
+            
