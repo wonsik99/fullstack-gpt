@@ -59,12 +59,6 @@ with st.sidebar:
     st.write("---")
     API_KEY = st.text_input("Enter your OpenAI API key", type="password")
     is_invalid = validate_key(API_KEY)
-    st.link_button(
-        "Github repo",
-        "https://github.com/bioroid17/nomad-gpt-challenge",
-    )
-    with st.expander("View source code"):
-        st.markdown("Here comes the source code")
 
 # ================= Tools (4가지 파이썬 함수) =================
 def wikipedia_search(inputs):
