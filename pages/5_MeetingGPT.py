@@ -6,6 +6,34 @@ import os
 import glob
 from openai import OpenAI
 import httpx
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.document_loaders import TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_community.storage import LocalFileStore
+from langchain_core.embeddings import CacheBackedEmbeddings
+
+llm = ChatOpenAI(
+    model_name="gpt-5.4-nano",
+    temperature=0.1
+    )
+
+@st.cache_resource
+def embed_file(file_path):
+
+    cache_dir = LocalFileStore(f"./.cache/embeddings/{file.name}")
+    splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+        chunk_size=600,
+        chunk_overlap=100,
+    )
+    loader = TextLoader(file_path)
+    docs = loader.load_and_split(text_splitter=splitter)
+    embeddings = OpenAIEmbeddings()
+    cached_embeddings = CacheBackedEmbeddings.from_bytes_store(embeddings, cache_dir)
+    vectorstore = FAISS.from_documents(docs, cached_embeddings)
+    retriever = vectorstore.as_retriever() #k=4 is default
+    return retriever
 
 @st.cache_data()
 def extract_audio_from_video(video_path, audio_path):
@@ -77,14 +105,70 @@ if video:
 
     status.update(label="Transcribing Audio...", state="running")
     transcribe_chunks(chunks_folder, transcript_path)
+    status.update(state="complete")
 
-transcript_tab, summary_tab, qa_tab = st.tabs(["Transcript", "Summary", "Q&A"])
-
-with transcript_tab:
-    with open(transcript_path, "r") as f:
-        st.write(f.read())
-
-with summary_tab:
-    with open(transcript_path, "r") as f:
-        transcript = f.read()
+    transcript_tab, summary_tab, qa_tab = st.tabs(["Transcript", "Summary", "Q&A"])
+    
+    with transcript_tab:
+        with open(transcript_path, "r") as f:
+            st.write(f.read())
+    
+    with summary_tab:
+        start = st.button("Generate Summary")
         
+        if start:
+            loader = TextLoader(transcript_path)
+            
+            splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                chunk_size=800,
+                chunk_overlap=100
+            )
+            docs = loader.load_and_split(text_splitter=splitter)
+            
+            first_summary_prompt = ChatPromptTemplate.from_template(
+                """
+                Write a concise summary of the following:
+                "{text}"
+                CONCISE SUMMARY:
+                """
+            )
+            first_summary_chain = first_summary_prompt | llm
+            
+            summary = first_summary_chain.invoke({
+                "text": docs[0].page_content
+            }).content
+            
+            refine_prompt = ChatPromptTemplate.from_template(
+                """
+                Your job is to produce a final summary.
+                We have provided an existing summary up to a certain point: {existing_answer}
+                We have the opportunity to refine the existing summary (only if needed) with some more context below
+                ------
+                {text}
+                ------
+                Given the new context, refine the original summary.
+                If the context is not useful, RETURN the original summary.
+                """
+            )
+            refine_chain = refine_prompt | llm
+            
+            with st.status("Refining Summary...") as status:
+                for i, doc in enumerate(docs[1:]):
+                    status.update(label=f"Refining Summary... ({i+1}/{len(docs)-1})", state="running")
+                    summary = refine_chain.invoke({
+                        "existing_answer": summary,
+                        "text": doc.page_content
+                    }).content
+            status.update(state="complete")
+            st.write(summary)
+
+    with qa_tab:
+        retriever = embed_file(transcript_path)
+        
+        response = retriever.invoke("Who is the main speaker")
+
+        st.write(response)
+
+        # TODO: Add chat interface
+        # Map rerank chain or Map reduce chain
+
