@@ -21,12 +21,10 @@ class EventHandler(AssistantEventHandler):
         self.message_box.markdown(self.message)
 
     def on_event(self, event):
-        if event.event == "thread.run.created":
-            self.run_id = event.data.id
-            self.thread_id = event.data.thread_id
-
         if event.event == "thread.run.requires_action":
-            submit_tool_outputs(self.run_id, self.thread_id)
+            run_id = event.data.id
+            thread_id = event.data.thread_id
+            submit_tool_outputs(run_id, thread_id)
 
 st.set_page_config(
     page_title="AssistantGPT",
